@@ -1,14 +1,14 @@
 Deno.serve(async (req) => {
   const url = new URL(req.url);
 
-  // 1. Frontend UI
+  // 1. UI Section
   if (url.pathname === "/" || url.pathname === "") {
     const html = `
       <!DOCTYPE html>
       <html lang="en">
       <head>
         <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>IceDrive Streamer</title>
+        <title>IceDrive Fixer</title>
         <style>
           body { font-family: system-ui, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background: #0b0c10; color: #66fcf1; margin: 0; }
           .card { background: #1f2833; padding: 40px; border-radius: 16px; width: 100%; max-width: 500px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
@@ -20,8 +20,8 @@ Deno.serve(async (req) => {
       </head>
       <body>
         <div class="card">
-          <h2>❄️ IceDrive Player</h2>
-          <p>Paste IceDrive Link to Stream Video</p>
+          <h2>❄️ IceDrive Streamer</h2>
+          <p>Fix for .txt video files</p>
           <form id="form">
             <input type="url" id="iceUrl" placeholder="https://icedrive.net/s/..." required />
             <button type="submit">Play Video</button>
@@ -41,26 +41,41 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Extract IceDrive URL from path
     const rawPath = decodeURIComponent(url.pathname + url.search).substring(1);
     
     if (!rawPath.includes("icedrive.net/s/")) {
         return new Response("Invalid IceDrive URL.", { status: 400 });
     }
 
-    // --- STEP A: Extract File ID & Call API ---
-    // URL Format: https://icedrive.net/s/123ABC456
+    // Extract File ID
     const parts = rawPath.split("/s/");
     const fileId = parts[1];
 
     if (!fileId) return new Response("Could not find File ID.", { status: 400 });
 
-    // Call IceDrive Public API to get Direct Link
+    // --- FIX 1: ADD FAKE HEADERS (Pretend to be Chrome) ---
+    const fakeHeaders = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Origin": "https://icedrive.net",
+        "Referer": "https://icedrive.net/",
+        "X-Requested-With": "XMLHttpRequest"
+    };
+
+    // Call IceDrive API
     const apiRes = await fetch("https://icedrive.net/app/api/delivery/get_public_link", {
         method: "POST",
         body: JSON.stringify({ id: fileId }),
-        headers: { "Content-Type": "application/json" }
+        headers: fakeHeaders
     });
+
+    // Check if response is actually JSON before parsing
+    const contentType = apiRes.headers.get("content-type");
+    if (!contentType || !contentType.includes("application/json")) {
+        const text = await apiRes.text();
+        console.log("IceDrive blocked the request:", text.substring(0, 100));
+        return new Response("IceDrive Blocked Deno (Anti-Bot). Try using R2 method instead.", { status: 403 });
+    }
 
     const apiData = await apiRes.json();
 
@@ -70,31 +85,26 @@ Deno.serve(async (req) => {
 
     const directLink = apiData.url;
 
-    // --- STEP B: Stream the Video (Range Request) ---
+    // --- Stream Video ---
     const requestHeaders = new Headers();
     const range = req.headers.get("range");
     if (range) requestHeaders.set("Range", range);
     
-    // Spoof User-Agent just in case
-    requestHeaders.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+    // Pass User-Agent to the file server too
+    requestHeaders.set("User-Agent", fakeHeaders["User-Agent"]);
 
     const fileRes = await fetch(directLink, {
         headers: requestHeaders 
     });
 
-    // --- STEP C: Prepare Headers for Inline Playback ---
+    // --- FIX 2: FORCE VIDEO CONTENT TYPE ---
     const responseHeaders = new Headers(fileRes.headers);
     
-    // 'inline' makes the browser play it instead of downloading
-    let filename = "video.mp4";
-    // Try to get real filename from IceDrive response headers
-    const disp = fileRes.headers.get("content-disposition");
-    if (disp && disp.includes("filename=")) {
-        filename = disp.split("filename=")[1].replace(/"/g, "");
-    }
-
-    responseHeaders.set("Content-Disposition", `inline; filename="${filename}"`);
-    responseHeaders.set("Access-Control-Allow-Origin", "*"); // For Players
+    // Even if file is .txt, tell browser it is MP4
+    responseHeaders.set("Content-Type", "video/mp4"); 
+    responseHeaders.set("Content-Disposition", `inline; filename="video.mp4"`);
+    
+    responseHeaders.set("Access-Control-Allow-Origin", "*");
     responseHeaders.set("Access-Control-Allow-Headers", "Range");
     responseHeaders.set("Access-Control-Expose-Headers", "Content-Range, Content-Length");
 
